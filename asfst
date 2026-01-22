@@ -1,0 +1,33 @@
+#!/usr/bin/env node
+
+import yargs from 'yargs';
+import { hideBin } from 'yargs/helpers';
+import { retrieveMetadata } from './src/metadata-retriever.js';
+import { cacheMetadata, clearCache } from './src/caching.js';
+import fse from 'fs-extra';
+
+yargs(hideBin(process.argv))
+  .command('ingest', 'Ingest metadata from Salesforce', async () => {
+    try {
+      console.log('Starting metadata ingestion...');
+
+      const metadataTypes = [
+        'ApexClass',
+        'ApexTrigger',
+        'CustomObject',
+        'CustomLabels',
+      ];
+
+      await clearCache();
+      await retrieveMetadata(metadataTypes);
+      await cacheMetadata('./metadata');
+      await fse.remove('./metadata');
+
+      console.log('Metadata ingestion complete. Local cache created at .asfst-cache');
+    } catch (error) {
+      console.error('An error occurred during metadata ingestion:', error.message);
+      process.exit(1);
+    }
+  })
+  .demandCommand(1)
+  .parse();

@@ -1,0 +1,31 @@
+{
+  "name": "asfst",
+  "version": "1.0.0",
+  "description": "Abstract symbolic dependency graph of Salesforce executable metadata",
+  "main": "index.js",
+  "bin": {
+    "asfst": "./asfst"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thamok/AsfST.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/thamok/AsfST/issues"
+  },
+  "homepage": "https://github.com/thamok/AsfST#readme",
+  "dependencies": {
+    "@salesforce/core": "^8.24.3",
+    "@salesforce/source-deploy-retrieve": "^12.31.7",
+    "fs-extra": "^11.3.3",
+    "xml2js": "^0.6.2",
+    "yargs": "^18.0.0"
+  }
+}
