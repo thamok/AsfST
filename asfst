@@ -7,6 +7,7 @@ import { cacheMetadata, clearCache } from './src/caching.js';
 import { parseFile, parseCode } from './src/parser.js';
 import { analyzeComplexity } from './src/complexity.js';
 import { abstractFile, formatForLLM } from './src/abstraction.js';
+import { formatAsSemanticContext, formatAsConstraintContext, formatAsImpactContext } from './src/llm-formatter.js';
 import fse from 'fs-extra';
 import yaml from 'js-yaml';
 
@@ -227,14 +228,98 @@ yargs(hideBin(process.argv))
           console.log(output);
         }
       } catch (error) {
-        console.error('Error generating context:', error.message);
-        process.exit(1);
-      }
-    }
-  )
-  .demandCommand(1)
-  .help()
-  .alias('help', 'h')
-  .version()
-  .alias('version', 'v')
-  .parse();
+         console.error('Error generating context:', error.message);
+         process.exit(1);
+       }
+     }
+   )
+   .command(
+     'semantic <file>',
+     'Generate semantic context (intent-focused) for code understanding',
+     (yargs) => {
+       return yargs
+         .positional('file', {
+           describe: 'Path to .cls or .trigger file',
+           type: 'string',
+         })
+         .option('no-schema', {
+           describe: 'Skip schema resolution',
+           type: 'boolean',
+           default: false,
+         });
+     },
+     async (argv) => {
+       try {
+         const abstraction = await abstractFile(argv.file, {
+           resolveSchema: !argv['no-schema'],
+         });
+         const output = formatAsSemanticContext(abstraction);
+         console.log(output);
+       } catch (error) {
+         console.error('Error generating semantic context:', error.message);
+         process.exit(1);
+       }
+     }
+   )
+   .command(
+     'constraints <file>',
+     'Generate constraint-focused context for validation and schema understanding',
+     (yargs) => {
+       return yargs
+         .positional('file', {
+           describe: 'Path to .cls or .trigger file',
+           type: 'string',
+         })
+         .option('no-schema', {
+           describe: 'Skip schema resolution',
+           type: 'boolean',
+           default: false,
+         });
+     },
+     async (argv) => {
+       try {
+         const abstraction = await abstractFile(argv.file, {
+           resolveSchema: !argv['no-schema'],
+         });
+         const output = formatAsConstraintContext(abstraction);
+         console.log(output);
+       } catch (error) {
+         console.error('Error generating constraint context:', error.message);
+         process.exit(1);
+       }
+     }
+   )
+   .command(
+     'impact <file>',
+     'Generate impact analysis (blast radius and risk assessment)',
+     (yargs) => {
+       return yargs
+         .positional('file', {
+           describe: 'Path to .cls or .trigger file',
+           type: 'string',
+         })
+         .option('no-schema', {
+           describe: 'Skip schema resolution',
+           type: 'boolean',
+           default: false,
+         });
+     },
+     async (argv) => {
+       try {
+         const abstraction = await abstractFile(argv.file, {
+           resolveSchema: !argv['no-schema'],
+         });
+         const output = formatAsImpactContext(abstraction);
+         console.log(output);
+       } catch (error) {
+         console.error('Error generating impact analysis:', error.message);
+         process.exit(1);
+       }
+     }
+   )
+   .demandCommand(1)
+   .help()
+   .alias('help', 'h')
+   .version()
+   .alias('version', 'v')
+   .parse();

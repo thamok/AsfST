@@ -14,6 +14,7 @@
 import { schemaRegistry } from './schema-registry.js';
 import { parseCode, parseFile } from './parser.js';
 import { getComplexityRating } from './complexity.js';
+import { SymbolTable } from './symbol-table.js';
 
 /**
  * Approximate tokens per character for estimation
@@ -35,11 +36,18 @@ async function createAbstraction(parsedResult, options = {}) {
     includeValidationRules = true,
     targetMethod = null, // Focus on specific method
     contextDepth = 2,    // How deep to trace dependencies
+    resolveSymbols = true, // Resolve types via symbol table
   } = options;
 
   // Load schema if needed
   if (resolveSchema) {
     await schemaRegistry.loadFromCache();
+  }
+
+  // Build symbol table for type resolution
+  const symbolTable = new SymbolTable(parsedResult);
+  if (resolveSymbols) {
+    symbolTable.buildFromParsedResult();
   }
 
   const abstraction = {
@@ -60,6 +68,7 @@ async function createAbstraction(parsedResult, options = {}) {
       maxMethodBodyLines,
       resolveSchema,
       targetMethod,
+      symbolTable,
     }),
     
     // Condensed constructors
@@ -69,7 +78,7 @@ async function createAbstraction(parsedResult, options = {}) {
     state: buildStateAbstraction(parsedResult),
     
     // All SObjects touched by this class
-    touches: aggregateTouches(parsedResult, resolveSchema),
+    touches: aggregateTouches(parsedResult, resolveSchema, symbolTable),
     
     // Constraints from validation rules
     constraints: includeValidationRules ? 
@@ -84,6 +93,9 @@ async function createAbstraction(parsedResult, options = {}) {
       rating: getComplexityRating(parsedResult.complexity),
       hotspots: findComplexityHotspots(parsedResult),
     },
+    
+    // Symbol table info for debugging/inspection
+    symbols: resolveSymbols ? symbolTable.getTypeSummary() : null,
     
     // Token estimation
     tokens: null, // Calculated after serialization
@@ -137,7 +149,7 @@ function buildMethodAbstractions(parsed, options) {
         score: method.complexity,
         rating: getComplexityRating(method.complexity).level,
       },
-      touches: buildMethodTouches(method, options.resolveSchema),
+      touches: buildMethodTouches(method, options.resolveSchema, options.symbolTable),
     };
 
     // Add annotations if present
@@ -172,7 +184,7 @@ function buildMethodSignature(method) {
 /**
  * Build touches for a method - what SObjects/fields it reads/writes
  */
-function buildMethodTouches(method, resolveSchema) {
+function buildMethodTouches(method, resolveSchema, symbolTable) {
   const touches = {
     reads: [],   // SOQL queries
     writes: [],  // DML operations
@@ -206,6 +218,19 @@ function buildMethodTouches(method, resolveSchema) {
           label: schema.label,
           isStandard: schema.isStandard || false,
         };
+        
+        // Add field type information
+        read.fieldTypes = {};
+        for (const field of read.fields) {
+          const fieldInfo = schemaRegistry.getField(query.object, field);
+          if (fieldInfo) {
+            read.fieldTypes[field] = {
+              type: fieldInfo.type,
+              required: fieldInfo.required,
+              description: fieldInfo.description,
+            };
+          }
+        }
       }
     }
   }
@@ -218,11 +243,52 @@ function buildMethodTouches(method, resolveSchema) {
       line: dml.line,
     };
 
-    // Try to infer the object type from variable name
-    const inferredObject = inferObjectFromTarget(dml.target);
+    // Try to resolve the target type via symbol table
+    let inferredObject = null;
+    if (symbolTable) {
+      const symbol = symbolTable.resolveSymbol(dml.target);
+      if (symbol && symbol.type) {
+        inferredObject = symbolTable.extractBaseType(symbol.type);
+        write.resolved = symbol;
+      }
+      
+      // If not resolved, try pattern-based inference from SOQL queries
+      if (!inferredObject && method.soql) {
+        for (const query of method.soql) {
+          const targetLower = dml.target.toLowerCase();
+          const objectLower = query.object.toLowerCase();
+          
+          // Check naming patterns
+          if (targetLower.includes(objectLower) || 
+              targetLower.includes('to' + objectLower) ||
+              (objectLower === 'account' && targetLower.includes('accounts'))) {
+            inferredObject = query.object;
+            write.inferredPattern = true;
+            break;
+          }
+        }
+      }
+    }
+    
+    // Fallback to pattern-based inference
+    if (!inferredObject) {
+      inferredObject = inferObjectFromTarget(dml.target);
+    }
+    
     if (inferredObject) {
       write.object = inferredObject;
       touches.objects.add(inferredObject);
+      
+      // Enrich with schema info
+      if (resolveSchema) {
+        const schema = schemaRegistry.getObject(inferredObject);
+        if (schema) {
+          write.schemaInfo = {
+            label: schema.label,
+            isStandard: schema.isStandard || false,
+          };
+        }
+      }
     }
 
     touches.writes.push(write);
@@ -321,7 +387,7 @@ function buildStateAbstraction(parsed) {
 /**
  * Aggregate all touches across the entire class
  */
-function aggregateTouches(parsed, resolveSchema) {
+function aggregateTouches(parsed, resolveSchema, symbolTable) {
   const allObjects = new Set();
   const allFields = new Set();
   const operations = {
@@ -346,12 +412,32 @@ function aggregateTouches(parsed, resolveSchema) {
     }
     
     for (const dml of (method.dml || [])) {
+      let inferredObject = null;
+      
+      // Try symbol table resolution first
+      if (symbolTable) {
+        const resolved = symbolTable.resolveFieldAccess(dml.target);
+        if (resolved && resolved.baseType) {
+          inferredObject = resolved.baseType;
+        }
+      }
+      
+      // Fallback to pattern-based
+      if (!inferredObject) {
+        inferredObject = inferObjectFromTarget(dml.target);
+      }
+      
       operations.dml.push({
         method: method.name,
         operation: dml.type,
         target: dml.target,
+        object: inferredObject,
         line: dml.line,
       });
+      
+      if (inferredObject) {
+        allObjects.add(inferredObject);
+      }
     }
   }
 
@@ -395,6 +481,7 @@ function aggregateTouches(parsed, resolveSchema) {
           isStandard: schema.isStandard || false,
           fieldCount: schema.fields?.size || 0,
           hasValidationRules: (schema.validationRules?.length || 0) > 0,
+          availableFields: Array.from(schema.fields?.keys() || []),
         };
       }
     }
@@ -541,48 +628,76 @@ function formatForLLM(abstraction) {
     lines.push('');
   }
 
-  // Methods
-  if (methods?.length > 0) {
-    lines.push('## Methods');
-    for (const method of methods) {
-      lines.push(`### ${method.name}`);
-      lines.push(`Signature: ${method.signature}`);
-      lines.push(`Complexity: ${method.complexity.score} (${method.complexity.rating})`);
-      
-      if (method.annotations?.length > 0) {
-        lines.push(`Annotations: ${method.annotations.map(a => '@' + a).join(', ')}`);
-      }
+   // Methods
+   if (methods?.length > 0) {
+     lines.push('## Methods');
+     for (const method of methods) {
+       lines.push(`### ${method.name}`);
+       lines.push(`Signature: ${method.signature}`);
+       lines.push(`Complexity: ${method.complexity.score} (${method.complexity.rating})`);
+       
+       if (method.annotations?.length > 0) {
+         lines.push(`Annotations: ${method.annotations.map(a => '@' + a).join(', ')}`);
+       }
 
-      // Touches
-      if (method.touches.reads?.length > 0) {
-        lines.push('Reads:');
-        for (const read of method.touches.reads) {
-          lines.push(`  - ${read.object}: [${read.fields.join(', ')}]`);
-        }
-      }
-      if (method.touches.writes?.length > 0) {
-        lines.push('Writes:');
-        for (const write of method.touches.writes) {
-          lines.push(`  - ${write.operation} ${write.target}${write.object ? ` (${write.object})` : ''}`);
-        }
-      }
-      lines.push('');
-    }
-  }
+       // Touches - now with enriched type information
+       if (method.touches.reads?.length > 0) {
+         lines.push('Reads:');
+         for (const read of method.touches.reads) {
+           let readLine = `  - ${read.object}`;
+           
+           // Add field types if available
+           if (read.fieldTypes && Object.keys(read.fieldTypes).length > 0) {
+             const fieldInfo = read.fields.map(f => {
+               const ftype = read.fieldTypes[f];
+               if (ftype) {
+                 return `${f} (${ftype.type}${ftype.required ? ', required' : ''})`;
+               }
+               return f;
+             });
+             readLine += `: [${fieldInfo.join(', ')}]`;
+           } else {
+             readLine += `: [${read.fields.join(', ')}]`;
+           }
+           
+           lines.push(readLine);
+         }
+       }
+       if (method.touches.writes?.length > 0) {
+         lines.push('Writes:');
+         for (const write of method.touches.writes) {
+           let writeLine = `  - ${write.operation}`;
+           if (write.object) {
+             writeLine += ` ${write.target} (${write.object})`;
+           } else {
+             writeLine += ` ${write.target}`;
+           }
+           lines.push(writeLine);
+         }
+       }
+       lines.push('');
+     }
+   }
 
-  // Object Touches Summary
-  if (touches.objects?.length > 0) {
-    lines.push('## Objects Touched');
-    for (const obj of touches.objects) {
-      const schema = touches.objectSchemas?.[obj];
-      if (schema) {
-        lines.push(`  - ${obj} (${schema.label}, ${schema.isStandard ? 'Standard' : 'Custom'})`);
-      } else {
-        lines.push(`  - ${obj}`);
-      }
-    }
-    lines.push('');
-  }
+   // Object Touches Summary
+   if (touches.objects?.length > 0) {
+     lines.push('## Objects Touched');
+     for (const obj of touches.objects) {
+       const schema = touches.objectSchemas?.[obj];
+       if (schema) {
+         let objLine = `  - ${obj} (${schema.label}, ${schema.isStandard ? 'Standard' : 'Custom'})`;
+         if (schema.availableFields?.length > 0) {
+           const fieldPreview = schema.availableFields.slice(0, 5).join(', ');
+           const more = schema.availableFields.length > 5 ? `, +${schema.availableFields.length - 5} more` : '';
+           objLine += `\n    Fields: ${fieldPreview}${more}`;
+         }
+         lines.push(objLine);
+       } else {
+         lines.push(`  - ${obj}`);
+       }
+     }
+     lines.push('');
+   }
 
   // Constraints
   if (constraints?.length > 0) {
