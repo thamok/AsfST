@@ -15,6 +15,8 @@ import { schemaRegistry } from './schema-registry.js';
 import { parseCode, parseFile } from './parser.js';
 import { getComplexityRating } from './complexity.js';
 import { SymbolTable } from './symbol-table.js';
+import { SemanticGraph } from './semantic-graph.js';
+import { ReferenceResolver } from './reference-resolver.js';
 
 /**
  * Approximate tokens per character for estimation
@@ -37,6 +39,9 @@ async function createAbstraction(parsedResult, options = {}) {
     targetMethod = null, // Focus on specific method
     contextDepth = 2,    // How deep to trace dependencies
     resolveSymbols = true, // Resolve types via symbol table
+    buildSemanticGraph = false, // Build dependency DAG
+    sourceCode = null, // Source code text for reference resolution
+    allParsedClasses = [], // All classes for reference resolution
   } = options;
 
   // Load schema if needed
@@ -100,6 +105,30 @@ async function createAbstraction(parsedResult, options = {}) {
     // Token estimation
     tokens: null, // Calculated after serialization
   };
+
+  // Build semantic graph if requested
+  if (buildSemanticGraph) {
+    const graph = new SemanticGraph([parsedResult, ...allParsedClasses]);
+    
+    // Build source code map
+    const sourceCodeMap = new Map();
+    if (sourceCode) {
+      sourceCodeMap.set(parsedResult.file || 'unknown', sourceCode);
+    }
+    
+    // Resolve references
+    const resolver = new ReferenceResolver(
+      graph, 
+      [parsedResult, ...allParsedClasses],
+      sourceCodeMap
+    );
+    
+    abstraction.semanticGraph = {
+      graph: graph.toJSON(),
+      references: resolver.toJSON(),
+      stats: graph.getStats(),
+    };
+  }
 
   return abstraction;
 }

@@ -8,6 +8,10 @@ import { parseFile, parseCode } from './src/parser.js';
 import { analyzeComplexity } from './src/complexity.js';
 import { abstractFile, formatForLLM } from './src/abstraction.js';
 import { formatAsSemanticContext, formatAsConstraintContext, formatAsImpactContext } from './src/llm-formatter.js';
+import { SemanticGraph } from './src/semantic-graph.js';
+import { ReferenceResolver } from './src/reference-resolver.js';
+import { GraphSerializer } from './src/graph-serializer.js';
+import { GraphAnalyzer } from './src/graph-analyzer.js';
 import fse from 'fs-extra';
 import yaml from 'js-yaml';
 
@@ -316,8 +320,227 @@ yargs(hideBin(process.argv))
          process.exit(1);
        }
      }
-   )
-   .demandCommand(1)
+    )
+    .command(
+      'graph <file>',
+      'Build and analyze semantic dependency graph (DAG)',
+      (yargs) => {
+        return yargs
+          .positional('file', {
+            describe: 'Path to .cls or .trigger file',
+            type: 'string',
+          })
+          .option('format', {
+            alias: 'f',
+            describe: 'Output format',
+            choices: ['json', 'yaml', 'compact'],
+            default: 'json',
+          })
+          .option('include-context', {
+            describe: 'Include context radius for first method',
+            type: 'boolean',
+            default: false,
+          })
+          .option('context-depth', {
+            describe: 'Context depth (1-5)',
+            type: 'number',
+            default: 2,
+          });
+      },
+      async (argv) => {
+        try {
+          const sourceCode = await fse.readFile(argv.file, 'utf-8');
+          const parsed = await parseFile(argv.file);
+          const graph = new SemanticGraph([parsed]);
+          const sourceCodeMap = new Map([[parsed.file, sourceCode]]);
+          new ReferenceResolver(graph, [parsed], sourceCodeMap);
+          
+          const serializer = new GraphSerializer(graph);
+          let output;
+
+          if (argv['include-context'] && graph.methodNodes.size > 0) {
+            const methodId = graph.methodNodes.values().next().value;
+            output = serializer.serializeContextRadius(methodId, argv['context-depth']);
+          } else {
+            output = serializer.serializeFullGraph();
+          }
+
+          if (argv.format === 'yaml') {
+            console.log(yaml.dump(output, { lineWidth: -1 }));
+          } else if (argv.format === 'compact') {
+            if (graph.methodNodes.size > 0) {
+              const methodId = graph.methodNodes.values().next().value;
+              output = serializer.serializeCompact(methodId, argv['context-depth']);
+            }
+            console.log(JSON.stringify(output));
+          } else {
+            console.log(JSON.stringify(output, null, 2));
+          }
+        } catch (error) {
+          console.error('Error building graph:', error.message);
+          process.exit(1);
+        }
+      }
+    )
+    .command(
+      'hotspots <file>',
+      'Identify critical hotspots in code (most depended-on elements)',
+      (yargs) => {
+        return yargs
+          .positional('file', {
+            describe: 'Path to .cls or .trigger file',
+            type: 'string',
+          })
+          .option('limit', {
+            alias: 'l',
+            describe: 'Number of hotspots to show',
+            type: 'number',
+            default: 10,
+          })
+          .option('format', {
+            alias: 'f',
+            describe: 'Output format',
+            choices: ['json', 'yaml', 'table'],
+            default: 'table',
+          });
+      },
+      async (argv) => {
+        try {
+          const sourceCode = await fse.readFile(argv.file, 'utf-8');
+          const parsed = await parseFile(argv.file);
+          const graph = new SemanticGraph([parsed]);
+          const sourceCodeMap = new Map([[parsed.file, sourceCode]]);
+          new ReferenceResolver(graph, [parsed], sourceCodeMap);
+          
+          const analyzer = new GraphAnalyzer(graph);
+          const hotspots = analyzer.findHotspots(argv.limit);
+
+          if (argv.format === 'table') {
+            console.log('\n📍 Code Hotspots (Most Critical Elements)\n');
+            console.log('Rank | Name                       | Type    | Criticality');
+            console.log('-----|----------------------------|---------|-------------');
+            hotspots.forEach((h, i) => {
+              const name = h.name.substring(0, 26).padEnd(26);
+              const type = h.type.padEnd(7);
+              console.log(
+                `${String(i + 1).padStart(4)} | ${name} | ${type} | ${h.criticalityScore.toString().padStart(3)}`
+              );
+            });
+            console.log();
+          } else if (argv.format === 'yaml') {
+            console.log(yaml.dump(hotspots, { lineWidth: -1 }));
+          } else {
+            console.log(JSON.stringify(hotspots, null, 2));
+          }
+        } catch (error) {
+          console.error('Error analyzing hotspots:', error.message);
+          process.exit(1);
+        }
+      }
+    )
+    .command(
+      'issues <file>',
+      'Detect code issues (dead code, cycles, unused fields)',
+      (yargs) => {
+        return yargs
+          .positional('file', {
+            describe: 'Path to .cls or .trigger file',
+            type: 'string',
+          })
+          .option('format', {
+            alias: 'f',
+            describe: 'Output format',
+            choices: ['json', 'yaml', 'summary'],
+            default: 'summary',
+          });
+      },
+      async (argv) => {
+        try {
+          const sourceCode = await fse.readFile(argv.file, 'utf-8');
+          const parsed = await parseFile(argv.file);
+          const graph = new SemanticGraph([parsed]);
+          const sourceCodeMap = new Map([[parsed.file, sourceCode]]);
+          new ReferenceResolver(graph, [parsed], sourceCodeMap);
+          
+          const analyzer = new GraphAnalyzer(graph);
+          const issues = analyzer.detectIssues();
+
+          if (argv.format === 'summary') {
+            console.log('\n🔍 Code Quality Issues\n');
+            console.log(`Dead Methods:    ${issues.deadMethods.length}`);
+            if (issues.deadMethods.length > 0) {
+              issues.deadMethods.slice(0, 5).forEach(m => {
+                console.log(`  - ${m.method}`);
+              });
+            }
+            console.log(`Unused Fields:   ${issues.unusedFields.length}`);
+            if (issues.unusedFields.length > 0) {
+              issues.unusedFields.slice(0, 5).forEach(f => {
+                console.log(`  - ${f.field}`);
+              });
+            }
+            console.log(`Cycles:          ${issues.cycles.length}`);
+            console.log();
+          } else if (argv.format === 'yaml') {
+            console.log(yaml.dump(issues, { lineWidth: -1 }));
+          } else {
+            console.log(JSON.stringify(issues, null, 2));
+          }
+        } catch (error) {
+          console.error('Error detecting issues:', error.message);
+          process.exit(1);
+        }
+      }
+    )
+    .command(
+      'complexity-report <file>',
+      'Generate detailed complexity analysis report',
+      (yargs) => {
+        return yargs
+          .positional('file', {
+            describe: 'Path to .cls or .trigger file',
+            type: 'string',
+          })
+          .option('format', {
+            alias: 'f',
+            describe: 'Output format',
+            choices: ['json', 'yaml', 'summary'],
+            default: 'summary',
+          });
+      },
+      async (argv) => {
+        try {
+          const sourceCode = await fse.readFile(argv.file, 'utf-8');
+          const parsed = await parseFile(argv.file);
+          const graph = new SemanticGraph([parsed]);
+          const sourceCodeMap = new Map([[parsed.file, sourceCode]]);
+          new ReferenceResolver(graph, [parsed], sourceCodeMap);
+          
+          const analyzer = new GraphAnalyzer(graph);
+          const report = analyzer.generateComplexityReport();
+
+          if (argv.format === 'summary') {
+            console.log('\n📊 Complexity Analysis Report\n');
+            console.log(`Total Methods:    ${report.methodCount}`);
+            console.log(`Average Complexity: ${report.avgComplexity}`);
+            console.log(`Max Complexity:   ${report.maxComplexity}`);
+            console.log(`\nMost Complex Methods:`);
+            report.mostComplex.slice(0, 5).forEach((m, i) => {
+              console.log(`  ${i + 1}. ${m.name} (complexity: ${m.complexity})`);
+            });
+            console.log();
+          } else if (argv.format === 'yaml') {
+            console.log(yaml.dump(report, { lineWidth: -1 }));
+          } else {
+            console.log(JSON.stringify(report, null, 2));
+          }
+        } catch (error) {
+          console.error('Error generating complexity report:', error.message);
+          process.exit(1);
+        }
+      }
+    )
+    .demandCommand(1)
    .help()
    .alias('help', 'h')
    .version()
