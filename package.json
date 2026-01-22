@@ -7,13 +7,20 @@
     "asfst": "./asfst"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/thamok/AsfST.git"
   },
-  "keywords": [],
+  "keywords": [
+    "salesforce",
+    "apex",
+    "ast",
+    "parser",
+    "tree-sitter"
+  ],
   "author": "",
   "license": "ISC",
   "type": "module",
@@ -25,7 +32,13 @@
     "@salesforce/core": "^8.24.3",
     "@salesforce/source-deploy-retrieve": "^12.31.7",
     "fs-extra": "^11.3.3",
+    "js-yaml": "^4.1.0",
+    "tree-sitter": "^0.22.4",
+    "tree-sitter-sfapex": "^2.4.1",
     "xml2js": "^0.6.2",
     "yargs": "^18.0.0"
+  },
+  "devDependencies": {
+    "jest": "^30.2.0"
   }
 }

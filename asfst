@@ -4,7 +4,10 @@ import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { retrieveMetadata } from './src/metadata-retriever.js';
 import { cacheMetadata, clearCache } from './src/caching.js';
+import { parseFile, parseCode } from './src/parser.js';
+import { analyzeComplexity } from './src/complexity.js';
 import fse from 'fs-extra';
+import yaml from 'js-yaml';
 
 yargs(hideBin(process.argv))
   .command('ingest', 'Ingest metadata from Salesforce', async () => {
@@ -29,5 +32,131 @@ yargs(hideBin(process.argv))
       process.exit(1);
     }
   })
+  .command(
+    'parse <file>',
+    'Parse an Apex file and extract structured metadata',
+    (yargs) => {
+      return yargs
+        .positional('file', {
+          describe: 'Path to .cls or .trigger file',
+          type: 'string',
+        })
+        .option('output', {
+          alias: 'o',
+          describe: 'Output format',
+          choices: ['json', 'yaml'],
+          default: 'json',
+        })
+        .option('pretty', {
+          alias: 'p',
+          describe: 'Pretty print output',
+          type: 'boolean',
+          default: true,
+        })
+        .option('complexity', {
+          alias: 'c',
+          describe: 'Include detailed complexity analysis',
+          type: 'boolean',
+          default: false,
+        })
+        .option('raw', {
+          alias: 'r',
+          describe: 'Include raw AST tree',
+          type: 'boolean',
+          default: false,
+        });
+    },
+    async (argv) => {
+      try {
+        const result = await parseFile(argv.file, {
+          includeRawTree: argv.raw,
+        });
+
+        // Add detailed complexity analysis if requested
+        if (argv.complexity) {
+          result.complexityAnalysis = analyzeComplexity(result);
+        }
+
+        // Output in requested format
+        let output;
+        if (argv.output === 'yaml') {
+          output = yaml.dump(result, { 
+            indent: 2, 
+            lineWidth: 120,
+            noRefs: true,
+          });
+        } else {
+          output = argv.pretty 
+            ? JSON.stringify(result, null, 2) 
+            : JSON.stringify(result);
+        }
+
+        console.log(output);
+      } catch (error) {
+        console.error('Error parsing file:', error.message);
+        process.exit(1);
+      }
+    }
+  )
+  .command(
+    'analyze <file>',
+    'Analyze complexity of an Apex file',
+    (yargs) => {
+      return yargs
+        .positional('file', {
+          describe: 'Path to .cls or .trigger file',
+          type: 'string',
+        })
+        .option('output', {
+          alias: 'o',
+          describe: 'Output format',
+          choices: ['json', 'yaml', 'text'],
+          default: 'text',
+        });
+    },
+    async (argv) => {
+      try {
+        const result = await parseFile(argv.file);
+        const analysis = analyzeComplexity(result);
+
+        if (argv.output === 'text') {
+          // Human-readable output
+          console.log(`\nComplexity Analysis: ${result.name}`);
+          console.log('='.repeat(50));
+          console.log(`Total Complexity: ${analysis.total} (${analysis.totalRating.level})`);
+          console.log(`Average Method Complexity: ${analysis.average}`);
+          console.log(`Number of Methods: ${analysis.methodCount}`);
+          
+          if (analysis.highComplexityMethods.length > 0) {
+            console.log(`\nHigh Complexity Methods:`);
+            for (const method of analysis.highComplexityMethods) {
+              console.log(`  - ${method.name} (line ${method.line}): ${method.complexity} - ${method.rating.description}`);
+            }
+          }
+          
+          if (analysis.recommendations.length > 0) {
+            console.log(`\nRecommendations:`);
+            for (const rec of analysis.recommendations) {
+              const icon = rec.severity === 'high' ? '!' : '-';
+              console.log(`  ${icon} ${rec.message}`);
+            }
+          }
+          
+          console.log('');
+        } else if (argv.output === 'yaml') {
+          console.log(yaml.dump(analysis, { indent: 2, noRefs: true }));
+        } else {
+          console.log(JSON.stringify(analysis, null, 2));
+        }
+      } catch (error) {
+        console.error('Error analyzing file:', error.message);
+        process.exit(1);
+      }
+    }
+  )
   .demandCommand(1)
+  .help()
+  .alias('help', 'h')
+  .version()
+  .alias('version', 'v')
   .parse();
