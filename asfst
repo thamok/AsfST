@@ -4,7 +4,6 @@ import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { retrieveMetadata } from './src/metadata-retriever.js';
 import { cacheMetadata, clearCache } from './src/caching.js';
-import { parseMetadata } from './src/parser.js';
 import fse from 'fs-extra';
 
 yargs(hideBin(process.argv))
@@ -25,18 +24,8 @@ yargs(hideBin(process.argv))
       await fse.remove('./metadata');
 
       console.log('Metadata ingestion complete. Local cache created at .asfst-cache');
-
-      await parseMetadata();
     } catch (error) {
       console.error('An error occurred during metadata ingestion:', error.message);
-      process.exit(1);
-    }
-  })
-  .command('parse', 'Parse metadata from the local cache', async () => {
-    try {
-      await parseMetadata();
-    } catch (error) {
-      console.error('An error occurred during metadata parsing:', error.message);
       process.exit(1);
     }
   })
